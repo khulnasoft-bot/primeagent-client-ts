@@ -1,0 +1,197 @@
+// Copyright KhulnaSoft, Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import { FormData, Headers } from "undici";
+
+import { PrimeagentClient } from "./index.js";
+import { FlowResponse } from "./flow_response.js";
+import { UploadResponse } from "./upload_response.js";
+import type { FlowInputType, FlowOutputType } from "./consts.js";
+import type { PrimeagentResponse } from "./flow_response.js";
+import type { PrimeagentUploadResponse } from "./upload_response.js";
+
+export class Flow {
+  client: PrimeagentClient;
+  id: string;
+  tweaks: Tweaks;
+
+  constructor(client: PrimeagentClient, flowId: string, tweaks: Tweaks = {}) {
+    this.client = client;
+    this.id = flowId;
+    this.tweaks = tweaks;
+  }
+
+  tweak(key: string, tweak: Tweak) {
+    const newTweaks = structuredClone(this.tweaks);
+    newTweaks[key] = tweak;
+    return new Flow(this.client, this.id, newTweaks);
+  }
+
+  async run(
+    input_value: string,
+    options: Partial<Omit<FlowRequestOptions, "input_value">> = {}
+  ) {
+    const {
+      input_type = "chat",
+      output_type = "chat",
+      session_id,
+      signal,
+    } = options;
+    const tweaks = { ...this.tweaks, ...options.tweaks };
+    const body = JSON.stringify({
+      input_type,
+      output_type,
+      input_value,
+      tweaks,
+      session_id,
+    });
+    const headers = new Headers();
+    headers.set("Content-Type", "application/json");
+    headers.set("Accept", "application/json");
+    const result = (await this.client.request({
+      path: `/v1/run/${this.id}`,
+      method: "POST",
+      body,
+      headers,
+      signal,
+    })) as PrimeagentResponse;
+
+    return new FlowResponse(result);
+  }
+
+  async stream(
+    input_value: string,
+    options: Partial<Omit<FlowRequestOptions, "input_value">> = {}
+  ) {
+    const {
+      input_type = "chat",
+      output_type = "chat",
+      session_id,
+      signal,
+    } = options;
+    const tweaks = { ...this.tweaks, ...options.tweaks };
+    const body = JSON.stringify({
+      input_type,
+      output_type,
+      input_value,
+      tweaks,
+      session_id,
+    });
+    const headers = new Headers();
+    headers.set("Content-Type", "application/json");
+    headers.set("Accept", "application/json");
+    const streamingResult = await this.client.stream<StreamEvent>({
+      path: `/v1/run/${this.id}`,
+      method: "POST",
+      body,
+      headers,
+      signal,
+    });
+    return streamingResult;
+  }
+
+  async uploadFile(file: File | Blob, options: { signal?: AbortSignal } = {}) {
+    const { signal } = options;
+
+    const form = new FormData();
+    form.append("file", file);
+
+    const headers = new Headers();
+    headers.set("Accept", "application/json");
+
+    const response = (await this.client.request({
+      path: `/v1/files/upload/${this.id}`,
+      method: "POST",
+      body: form,
+      headers,
+      signal,
+    })) as PrimeagentUploadResponse;
+    return new UploadResponse(response);
+  }
+}
+
+export interface FlowRequestOptions {
+  input_type: FlowInputType;
+  output_type: FlowOutputType;
+  input_value: string;
+  tweaks?: Tweaks;
+  session_id?: string;
+  signal?: AbortSignal;
+}
+
+export type Tweak = Record<string, string | number | null | boolean>;
+export type Tweaks = Record<string, Tweak | string>;
+
+export type TokenStreamEvent = {
+  event: "token";
+  data: TokenStreamEventData;
+};
+
+export type TokenStreamEventData = {
+  chunk: string;
+  id: string;
+  timestamp: string;
+};
+
+export type AddMessageStreamEvent = {
+  event: "add_message";
+  data: MessageStreamEventData;
+};
+
+export interface MessageStreamEventData {
+  timestamp: string;
+  sender: string;
+  sender_name: string;
+  session_id: string;
+  text: string;
+  files: unknown[];
+  error: boolean;
+  edit: boolean;
+  properties: MessageStreamEventDataProperties;
+  category: string;
+  content_blocks: unknown[];
+  id: string;
+  flow_id: string;
+  duration: unknown;
+}
+
+export interface MessageStreamEventDataProperties {
+  text_color: string;
+  background_color: string;
+  edited: boolean;
+  source: MessageStreamEventDataSource;
+  icon: string;
+  allow_markdown: boolean;
+  positive_feedback: unknown;
+  state: string;
+  targets: unknown[];
+}
+
+export interface MessageStreamEventDataSource {
+  id: unknown;
+  display_name: unknown;
+  source: unknown;
+}
+
+export type EndStreamEvent = {
+  event: "end";
+  data: EndStreamEventData;
+};
+
+export type EndStreamEventData = {
+  result: PrimeagentResponse;
+};
+
+export type StreamEvent =
+  TokenStreamEvent | AddMessageStreamEvent | EndStreamEvent;
